@@ -1,0 +1,10 @@
+ktor:
+  deployment:
+    port: 8080
+  application:
+    modules:
+      - com.nnomm.SerializationKt.configureSerialization
+      - com.nnomm.StatusPagesKt.configureStatusPages
+      - com.nnomm.RequestValidationKt.configureRequestValidation
+      - com.nnomm.AutoHeadResponseKt.configureAutoHeadResponse
+      - com.nnomm.RoutingKt.configureRouting
