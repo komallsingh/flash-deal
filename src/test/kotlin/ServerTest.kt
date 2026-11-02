@@ -11,6 +11,7 @@ class ServerTest {
     fun `test root endpoint`() = testApplication {
         application {
             configureRouting()
+            configureDatabase()
         }
 
         assertEquals(HttpStatusCode.OK, client.get("/").status)

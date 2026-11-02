@@ -8,3 +8,4 @@ ktor:
       - com.nnomm.RequestValidationKt.configureRequestValidation
       - com.nnomm.AutoHeadResponseKt.configureAutoHeadResponse
       - com.nnomm.RoutingKt.configureRouting
+      - com.nnomm.DatabaseKt.configureDatabase
