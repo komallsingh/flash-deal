@@ -1,6 +1,12 @@
 package repository
 
 import com.nnomm.config.DatabaseFactory
+import com.nnomm.errors.AppError
+import com.nnomm.errors.ErrorDetail
+import com.nnomm.errors.ErrorResponse
+import io.ktor.http.HttpStatusCode
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import model.ClaimCreationResult
 import java.sql.Connection
 import java.util.UUID
@@ -21,8 +27,12 @@ class ClaimRepository(
         leaseToken: UUID
     ): ClaimCreationResult {
 
-        require(quantity in 1..3) {
-            "Quantity must be between 1 and 3"
+        if (quantity !in 1..3) {
+            throw AppError(
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED",
+                "Quantity must be between 1 and 3"
+            )
         }
 
         val connection = dataSource.connection
@@ -69,7 +79,11 @@ connection.prepareStatement(dealSql).use { statement ->
 }
 
 val price = pricePaise
-    ?: throw NoSuchElementException("Deal not found")
+    ?: throw AppError(
+        HttpStatusCode.NotFound,
+        "NOT_FOUND",
+        "Deal not found"
+    )
 
 // Check deal timing after obtaining the row lock.
 val now = connection.createStatement().use { statement ->
@@ -107,7 +121,7 @@ val isDealLive = !now.isBefore(startsAt) && now.isBefore(endsAt)
                     idempotencyKey,
                     leaseToken,
                     409,
-                    errorBody("DEAL_NOT_LIVE", "Deal is not currently live")
+                    errorBody("DEAL_NOT_LIVE", "Deal has not started or has ended")
                 )
             }
 
@@ -139,7 +153,7 @@ val isDealLive = !now.isBefore(startsAt) && now.isBefore(endsAt)
                     409,
                     errorBody(
                         "ALREADY_CLAIMED",
-                        "Customer already has an active claim for this deal"
+                        "Customer already holds an active claim on this deal"
                     )
                 )
             }
@@ -166,7 +180,7 @@ val isDealLive = !now.isBefore(startsAt) && now.isBefore(endsAt)
                     idempotencyKey,
                     leaseToken,
                     409,
-                    errorBody("SOLD_OUT", "Not enough stock available")
+                    errorBody("SOLD_OUT", "Not enough units available")
                 )
             }
 
@@ -441,13 +455,13 @@ fun expireReservations(): Int {
         code: String,
         message: String
     ): String {
-        return """
-            {
-                "error": {
-                    "code": "$code",
-                    "message": "$message"
-                }
-            }
-        """.trimIndent()
+        return Json.encodeToString(
+            ErrorResponse(
+                error = ErrorDetail(
+                    code = code,
+                    message = message
+                )
+            )
+        )
     }
 }

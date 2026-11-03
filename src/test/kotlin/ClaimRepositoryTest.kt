@@ -207,6 +207,7 @@ class ClaimRepositoryTest {
 
         assertEquals(409, result.statusCode)
         assertTrue(result.body.contains("SOLD_OUT"))
+        assertTrue(result.body.contains("Not enough units available"))
 
         DatabaseFactory.dataSource.connection.use { connection ->
             connection.prepareStatement(
@@ -255,6 +256,7 @@ class ClaimRepositoryTest {
 
         assertEquals(409, secondResult.statusCode)
         assertTrue(secondResult.body.contains("ALREADY_CLAIMED"))
+        assertTrue(secondResult.body.contains("Customer already holds an active claim on this deal"))
 
         DatabaseFactory.dataSource.connection.use { connection ->
             connection.prepareStatement(
@@ -275,6 +277,40 @@ class ClaimRepositoryTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun `deal outside live window returns the contract error`() {
+        DatabaseFactory.dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                "UPDATE deals SET starts_at = ?, ends_at = ? WHERE id = ?"
+            ).use { statement ->
+                statement.setTimestamp(
+                    1,
+                    Timestamp.from(Instant.now().plusSeconds(3600))
+                )
+                statement.setTimestamp(
+                    2,
+                    Timestamp.from(Instant.now().plusSeconds(7200))
+                )
+                statement.setObject(3, dealId)
+                statement.executeUpdate()
+            }
+        }
+
+        val key = "not-live-key"
+        val lease = acquireLease(customerId, key, 1)
+        val result = claimRepository.createClaim(
+            customerId,
+            dealId,
+            1,
+            key,
+            lease
+        )
+
+        assertEquals(409, result.statusCode)
+        assertTrue(result.body.contains("DEAL_NOT_LIVE"))
+        assertTrue(result.body.contains("Deal has not started or has ended"))
     }
 
     @Test

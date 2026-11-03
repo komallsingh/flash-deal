@@ -89,6 +89,22 @@ class JwtServiceTest {
     }
 
     @Test
+    fun `malformed token is rejected`() {
+        assertUnauthorized("not-a-jwt")
+    }
+
+    @Test
+    fun `unsupported signing algorithm is rejected`() {
+        val token = JWT.create()
+            .withSubject(UUID.randomUUID().toString())
+            .withClaim("role", "customer")
+            .withExpiresAt(Date(System.currentTimeMillis() + 3600000))
+            .sign(Algorithm.HMAC384(secret))
+
+        assertUnauthorized(token)
+    }
+
+    @Test
     fun `invalid role is rejected`() {
         val token = generateToken("admin")
 
