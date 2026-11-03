@@ -12,6 +12,7 @@ import java.sql.Timestamp
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.*
+import org.flywaydb.core.Flyway
 
 class ClaimRepositoryTest {
 
@@ -26,7 +27,11 @@ class ClaimRepositoryTest {
     @Before
     fun setup() {
         DatabaseFactory.initialize()
-
+        Flyway.configure()
+        .dataSource(DatabaseFactory.dataSource)
+        .locations("classpath:db/migration")
+        .load()
+        .migrate()
         claimRepository = ClaimRepository()
 
         DatabaseFactory.dataSource.connection.use { connection ->
