@@ -4,10 +4,13 @@ import com.nnomm.config.DatabaseFactory
 import model.ClaimCreationResult
 import java.sql.Connection
 import java.util.UUID
+import javax.sql.DataSource
+import java.time.Instant
 
 class ClaimRepository(
+    private val dataSource: DataSource = DatabaseFactory.dataSource,
     private val idempotencyRepository: IdempotencyRepository =
-        IdempotencyRepository()
+        IdempotencyRepository(dataSource)
 ) {
 
     fun createClaim(
@@ -22,7 +25,7 @@ class ClaimRepository(
             "Quantity must be between 1 and 3"
         }
 
-        val connection = DatabaseFactory.dataSource.connection
+        val connection = dataSource.connection
 
         try {
             connection.autoCommit = false
@@ -41,34 +44,42 @@ class ClaimRepository(
 
             // 2. Lock the deal row.
             // All claim requests for this deal serialize on this row.
-            val dealSql = """
-                SELECT
-                    price_paise,
-                    starts_at <= CURRENT_TIMESTAMP AS has_started,
-                    ends_at > CURRENT_TIMESTAMP AS has_not_ended
-                FROM deals
-                WHERE id = ?
-                FOR UPDATE
-            """.trimIndent()
+            // 2. Lock the deal row first.
+val dealSql = """
+    SELECT price_paise, starts_at, ends_at
+    FROM deals
+    WHERE id = ?
+    FOR UPDATE
+""".trimIndent()
 
-            var pricePaise: Int? = null
-            var hasStarted = false
-            var hasNotEnded = false
+var pricePaise: Int? = null
+var startsAt: Instant? = null
+var endsAt: Instant? = null
 
-            connection.prepareStatement(dealSql).use { statement ->
-                statement.setObject(1, dealId)
+connection.prepareStatement(dealSql).use { statement ->
+    statement.setObject(1, dealId)
 
-                statement.executeQuery().use { result ->
-                    if (result.next()) {
-                        pricePaise = result.getInt("price_paise")
-                        hasStarted = result.getBoolean("has_started")
-                        hasNotEnded = result.getBoolean("has_not_ended")
-                    }
-                }
-            }
+    statement.executeQuery().use { result ->
+        if (result.next()) {
+            pricePaise = result.getInt("price_paise")
+            startsAt = result.getTimestamp("starts_at").toInstant()
+            endsAt = result.getTimestamp("ends_at").toInstant()
+        }
+    }
+}
 
-            val price = pricePaise
-                ?: throw NoSuchElementException("Deal not found")
+val price = pricePaise
+    ?: throw NoSuchElementException("Deal not found")
+
+// Check deal timing after obtaining the row lock.
+val now = connection.createStatement().use { statement ->
+    statement.executeQuery("SELECT clock_timestamp()").use { result ->
+        result.next()
+        result.getTimestamp(1).toInstant()
+    }
+}
+
+val isDealLive = !now.isBefore(startsAt) && now.isBefore(endsAt)
 
             // 3. Expire old reservations for this deal.
             // This also frees their stock before checking availability.
@@ -89,7 +100,7 @@ class ClaimRepository(
             }
 
             // 4. Check whether the deal is currently live.
-            if (!hasStarted || !hasNotEnded) {
+            if (!isDealLive) {
                 return saveOutcome(
                     connection,
                     customerId,

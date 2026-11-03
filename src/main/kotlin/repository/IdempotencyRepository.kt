@@ -4,8 +4,11 @@ import com.nnomm.config.DatabaseFactory
 import model.IdempotencyResult
 import java.sql.Connection
 import java.util.UUID
+import javax.sql.DataSource
 
-class IdempotencyRepository {
+class IdempotencyRepository(
+    private val dataSource: DataSource = DatabaseFactory.dataSource
+) {
 
     fun acquire(
         customerId: UUID,
@@ -13,7 +16,7 @@ class IdempotencyRepository {
         requestHash: String
     ): IdempotencyResult {
 
-        val connection = DatabaseFactory.dataSource.connection
+        val connection = dataSource.connection
 
         try {
             connection.autoCommit = false
