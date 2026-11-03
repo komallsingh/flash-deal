@@ -247,6 +247,141 @@ val isDealLive = !now.isBefore(startsAt) && now.isBefore(endsAt)
             connection.close()
         }
     }
+    fun getClaim(
+    claimId: UUID,
+    userId: UUID,
+    role: String,
+    restaurantId: UUID?
+): model.ClaimDetails? {
+
+    val sql = """
+        SELECT
+            c.id,
+            c.deal_id,
+            c.customer_id,
+            c.quantity,
+            c.amount_paise,
+            CASE
+    WHEN c.status = 'RESERVED'
+         AND c.expires_at <= clock_timestamp()
+    THEN 'EXPIRED'
+    ELSE c.status
+END AS status,
+            c.expires_at,
+            c.created_at
+        FROM claims c
+        JOIN deals d ON c.deal_id = d.id
+        WHERE c.id = ?
+          AND (
+              ( ? = 'customer' AND c.customer_id = ? )
+              OR
+              ( ? = 'restaurant_admin' AND d.restaurant_id = ? )
+          )
+    """.trimIndent()
+
+    dataSource.connection.use { connection ->
+        connection.prepareStatement(sql).use { statement ->
+
+            statement.setObject(1, claimId)
+            statement.setString(2, role)
+            statement.setObject(3, userId)
+            statement.setString(4, role)
+            statement.setObject(5, restaurantId)
+
+            statement.executeQuery().use { result ->
+
+                if (!result.next()) {
+                    return null
+                }
+
+                return model.ClaimDetails(
+                    id = result.getObject("id", UUID::class.java).toString(),
+                    deal_id = result.getObject("deal_id", UUID::class.java).toString(),
+                    customer_id = result.getObject("customer_id", UUID::class.java).toString(),
+                    quantity = result.getInt("quantity"),
+                    amount_paise = result.getInt("amount_paise"),
+                    status = result.getString("status"),
+                    expires_at = result.getTimestamp("expires_at").toInstant().toString(),
+                    created_at = result.getTimestamp("created_at").toInstant().toString()
+                )
+            }
+        }
+    }
+}
+fun expireReservations(): Int {
+    var totalExpired = 0
+
+    dataSource.connection.use { connection ->
+        try {
+            connection.autoCommit = false
+
+            // Find deals that have expired reservations.
+            val dealIds = mutableListOf<UUID>()
+
+            val findDealsSql = """
+                SELECT DISTINCT deal_id
+                FROM claims
+                WHERE status = 'RESERVED'
+                  AND expires_at <= clock_timestamp()
+                LIMIT 100
+            """.trimIndent()
+
+            connection.prepareStatement(findDealsSql).use { statement ->
+                statement.executeQuery().use { result ->
+                    while (result.next()) {
+                        dealIds.add(result.getObject("deal_id", UUID::class.java))
+                    }
+                }
+            }
+
+            // Always lock the deal before its claims.
+            // This follows the same lock order as createClaim().
+            for (dealId in dealIds) {
+
+                val lockDealSql = """
+                    SELECT id
+                    FROM deals
+                    WHERE id = ?
+                    FOR UPDATE
+                """.trimIndent()
+
+                val dealExists = connection.prepareStatement(lockDealSql).use { statement ->
+                    statement.setObject(1, dealId)
+                    statement.executeQuery().use { result ->
+                        result.next()
+                    }
+                }
+
+                if (!dealExists) continue
+
+                val expiredQuantity = expireOldReservations(connection, dealId)
+
+                if (expiredQuantity > 0) {
+                    val restoreSql = """
+                        UPDATE deals
+                        SET stock_available = stock_available + ?
+                        WHERE id = ?
+                    """.trimIndent()
+
+                    connection.prepareStatement(restoreSql).use { statement ->
+                        statement.setInt(1, expiredQuantity)
+                        statement.setObject(2, dealId)
+                        statement.executeUpdate()
+                    }
+
+                    totalExpired += expiredQuantity
+                }
+            }
+
+            connection.commit()
+            return totalExpired
+
+        } catch (exception: Exception) {
+            connection.rollback()
+            throw exception
+        }
+    }
+}
 
     private fun expireOldReservations(
         connection: Connection,
@@ -257,10 +392,10 @@ val isDealLive = !now.isBefore(startsAt) && now.isBefore(endsAt)
             UPDATE claims
             SET
                 status = 'EXPIRED',
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = clock_timestamp()
             WHERE deal_id = ?
               AND status = 'RESERVED'
-              AND expires_at <= CURRENT_TIMESTAMP
+              AND expires_at <= clock_timestamp()
             RETURNING quantity
         """.trimIndent()
 

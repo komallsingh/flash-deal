@@ -20,6 +20,41 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+  app1:
+    build: .
+    container_name: flash-deal-app-1
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      DATABASE_URL: jdbc:postgresql://postgres:5432/flash_deal
+      DATABASE_USER: flash_user
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      CLAIM_TTL_SECONDS: ${CLAIM_TTL_SECONDS:-600}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
+  app2:
+    build: .
+    container_name: flash-deal-app-2
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      PORT: 8080
+      DATABASE_URL: jdbc:postgresql://postgres:5432/flash_deal
+      DATABASE_USER: flash_user
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      CLAIM_TTL_SECONDS: ${CLAIM_TTL_SECONDS:-600}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        
 volumes:
   postgres_data:
