@@ -29,7 +29,7 @@ val dotenvValues = rootProject.file(".env").takeIf { it.isFile }
     }
     ?.toMap()
     .orEmpty()
-    .filterKeys { it in setOf("DATABASE_URL", "DATABASE_USER", "DATABASE_PASSWORD") }
+    .filterKeys { it in setOf("DATABASE_URL", "DATABASE_USER", "DATABASE_PASSWORD", "JWT_SECRET") }
 
 group = "com.nnomm"
 version = "1.0.0-SNAPSHOT"
@@ -55,7 +55,7 @@ dependencies {
     // Database
     implementation(libs.postgresql)
     implementation(libs.hikari)
-
+    implementation(libs.java.jwt)
 // Database migrations
     implementation(libs.flyway.core)
     implementation(libs.flyway.postgresql)

@@ -4,13 +4,14 @@ logback = "1.6.3"
 postgresql = "42.7.7"
 hikari = "6.3.0"
 flyway = "11.8.2"
-
+java-jwt = "4.5.0"
 [libraries]
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
 hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
 flyway-postgresql = { module = "org.flywaydb:flyway-database-postgresql", version.ref = "flyway" }
+java-jwt = { module = "com.auth0:java-jwt", version.ref = "java-jwt" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
