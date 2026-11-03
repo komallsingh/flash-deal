@@ -148,4 +148,71 @@ class ClaimRepositoryTest {
             }
         }
     }
+        @Test
+    fun `customer cannot create another active claim for same deal`() {
+        val quantity = 1
+
+        val firstKey = "first-claim-key"
+        val firstLease = acquireLease(firstKey, quantity)
+
+        val firstResult = claimRepository.createClaim(
+            customerId,
+            dealId,
+            quantity,
+            firstKey,
+            firstLease
+        )
+
+        assertEquals(201, firstResult.statusCode)
+
+        // Different key, same customer and deal
+        val secondKey = "second-claim-key"
+        val secondLease = acquireLease(secondKey, quantity)
+
+        val secondResult = claimRepository.createClaim(
+            customerId,
+            dealId,
+            quantity,
+            secondKey,
+            secondLease
+        )
+
+        assertEquals(409, secondResult.statusCode)
+        assertTrue(secondResult.body.contains("ALREADY_CLAIMED"))
+
+        DatabaseFactory.dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT COUNT(*)
+                FROM claims
+                WHERE customer_id = ?
+                  AND deal_id = ?
+                  AND status IN ('RESERVED', 'PAID', 'NEEDS_REVIEW')
+                """.trimIndent()
+            ).use { statement ->
+                statement.setObject(1, customerId)
+                statement.setObject(2, dealId)
+
+                statement.executeQuery().use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals(1, rs.getInt(1))
+                }
+            }
+        }
+    }
+
+    private fun acquireLease(key: String, quantity: Int): UUID {
+        val hash = RequestHasher.hash(dealId, quantity)
+
+        return when (
+            val result = IdempotencyRepository().acquire(
+                customerId,
+                key,
+                hash
+            )
+        ) {
+            is model.IdempotencyResult.Acquired -> result.leaseToken
+            else -> throw AssertionError("Expected lease acquisition, got $result")
+        }
+    }
 }
