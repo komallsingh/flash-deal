@@ -35,6 +35,8 @@ jobs:
       DATABASE_USER: flash_user
       DATABASE_PASSWORD: test_password
       JWT_SECRET: test-jwt-secret-for-ci
+      WEBHOOK_SECRET: test-webhook-secret-for-ci
+      CLAIM_TTL_SECONDS: 600
 
     steps:
       - name: Checkout repository
