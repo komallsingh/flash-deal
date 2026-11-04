@@ -25,7 +25,23 @@ fun Application.configureRequestValidation() {
 }
 
 internal suspend inline fun <reified T> ApplicationCall.receiveValidatedJson(): T {
+    val body = receiveRawValidatedBody()
+
+    return try {
+        Json.decodeFromString(body.decodeToString())
+    } catch (exception: SerializationException) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "Request body is malformed or missing required fields"
+        )
+    }
+}
+
+@PublishedApi
+internal suspend fun ApplicationCall.receiveRawValidatedBody(): ByteArray {
     val contentLength = request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+
     if (contentLength != null && contentLength > MAX_REQUEST_BODY_BYTES) {
         throw AppError(
             HttpStatusCode.PayloadTooLarge,
@@ -34,15 +50,32 @@ internal suspend inline fun <reified T> ApplicationCall.receiveValidatedJson(): 
         )
     }
 
+    val contentType = request.headers[HttpHeaders.ContentType]
+        ?.substringBefore(';')
+        ?.trim()
+
+    if (contentType == null ||
+        (!contentType.equals(ContentType.Application.Json.toString(), ignoreCase = true) &&
+            !contentType.endsWith("+json", ignoreCase = true))
+    ) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "Request body must be valid JSON"
+        )
+    }
+
     val channel = receiveChannel()
     val body = ByteArray(MAX_REQUEST_BODY_BYTES + 1)
     var bytesRead = 0
+
     while (bytesRead < body.size) {
         val read = channel.readAvailable(
             body,
             bytesRead,
             body.size - bytesRead
         )
+
         when {
             read == -1 -> break
             read == 0 -> continue
@@ -58,27 +91,5 @@ internal suspend inline fun <reified T> ApplicationCall.receiveValidatedJson(): 
         )
     }
 
-    val contentType = request.headers[HttpHeaders.ContentType]
-        ?.substringBefore(';')
-        ?.trim()
-    if (contentType == null ||
-        (!contentType.equals(ContentType.Application.Json.toString(), ignoreCase = true) &&
-            !contentType.endsWith("+json", ignoreCase = true))
-    ) {
-        throw AppError(
-            HttpStatusCode.BadRequest,
-            "VALIDATION_FAILED",
-            "Request body must be valid JSON"
-        )
-    }
-
-    return try {
-        Json.decodeFromString(body.decodeToString(endIndex = bytesRead))
-    } catch (exception: SerializationException) {
-        throw AppError(
-            HttpStatusCode.BadRequest,
-            "VALIDATION_FAILED",
-            "Request body is malformed or missing required fields"
-        )
-    }
+    return body.copyOf(bytesRead)
 }

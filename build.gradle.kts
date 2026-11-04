@@ -29,7 +29,7 @@ val dotenvValues = rootProject.file(".env").takeIf { it.isFile }
     }
     ?.toMap()
     .orEmpty()
-    .filterKeys { it in setOf("DATABASE_URL", "DATABASE_USER", "DATABASE_PASSWORD", "JWT_SECRET") }
+    .filterKeys { it in setOf("DATABASE_URL", "DATABASE_USER", "DATABASE_PASSWORD", "JWT_SECRET", "WEBHOOK_SECRET") }
 
 group = "com.nnomm"
 version = "1.0.0-SNAPSHOT"

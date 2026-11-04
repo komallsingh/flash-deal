@@ -17,6 +17,12 @@ import repository.ClaimRepository
 import repository.IdempotencyRepository
 import model.IdempotencyResult
 import service.RequestHasher
+import model.PaymentWebhookRequest
+import repository.PaymentRepository
+import security.WebhookSignatureVerifier
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import java.time.Instant
 
 fun Application.configureRouting() {
 
@@ -24,6 +30,8 @@ fun Application.configureRouting() {
     val jwtService = JwtService()
     val claimRepository = ClaimRepository()
     val idempotencyRepository = IdempotencyRepository()
+    val paymentRepository = PaymentRepository()
+val webhookSignatureVerifier = WebhookSignatureVerifier()
     routing {
 
         get("/") {
@@ -239,7 +247,86 @@ get("/v1/claims/{claimId}") {
     // 4. Return claim
     call.respond(HttpStatusCode.OK, claim)
 }
+post("/v1/webhooks/payments") {
+    // 1. Read the original bytes. This also enforces the 16 KB limit
+    // and checks the JSON content type.
+    val rawBody = call.receiveRawValidatedBody()
+
+    // 2. Verify the signature BEFORE parsing the JSON.
+    webhookSignatureVerifier.verify(
+        signatureHeader = call.request.headers["X-Payment-Signature"],
+        rawBody = rawBody
+    )
+
+    // 3. Deserialize the exact bytes that were signed.
+    val event = try {
+        Json.decodeFromString<PaymentWebhookRequest>(
+            rawBody.decodeToString()
+        )
+    } catch (exception: SerializationException) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "Payment webhook body is malformed or missing required fields"
+        )
     }
+
+    // 4. Validate the event fields.
+    if (event.event_id.isBlank() || event.event_id.length > 255) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "event_id must contain between 1 and 255 characters"
+        )
+    }
+
+    if (event.type != "payment.succeeded" &&
+        event.type != "payment.failed"
+    ) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "Unsupported payment event type"
+        )
+    }
+
+    val claimId = try {
+        UUID.fromString(event.claim_id)
+    } catch (exception: IllegalArgumentException) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "claim_id must be a valid UUID"
+        )
+    }
+
+    if (event.amount_paise <= 0) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "amount_paise must be positive"
+        )
+    }
+
+    try {
+        Instant.parse(event.occurred_at)
+    } catch (exception: Exception) {
+        throw AppError(
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED",
+            "occurred_at must be a valid ISO-8601 timestamp"
+        )
+    }
+
+    // 5. Process the event transactionally.
+    paymentRepository.processEvent(event)
+
+    // Both newly processed and duplicate events receive HTTP 200.
+    call.respond(HttpStatusCode.OK)
+}
+    }
+    
+
 }
 
 private fun parseUuid(value: String?, resource: String): UUID {

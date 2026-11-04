@@ -15,6 +15,10 @@ import java.util.Date
 import java.util.UUID
 import kotlin.test.*
 import kotlinx.serialization.decodeFromString
+import java.nio.charset.StandardCharsets
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import java.sql.Timestamp
 
 class ServerTest {
 
@@ -169,4 +173,320 @@ class ServerTest {
             }
         }
     }
+    private fun createWebhookSignature(
+    body: ByteArray,
+    timestamp: Long
+): String {
+    val secret = System.getenv("WEBHOOK_SECRET")
+        ?: error("WEBHOOK_SECRET is missing")
+
+    val message = "$timestamp.".toByteArray(StandardCharsets.UTF_8) + body
+
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(
+        SecretKeySpec(
+            secret.toByteArray(StandardCharsets.UTF_8),
+            "HmacSHA256"
+        )
+    )
+
+    val signature = mac.doFinal(message)
+        .joinToString("") { "%02x".format(it) }
+
+    return "t=$timestamp,v1=$signature"
+}
+@Test
+fun `valid webhook succeeds without JWT`() = testApplication {
+    application {
+        configureSerialization()
+        configureStatusPages()
+        configureDatabase()
+        configureRouting()
+    }
+
+    val eventId = "integration-unknown-${UUID.randomUUID()}"
+    val body = """
+        {
+            "event_id": "$eventId",
+            "type": "payment.succeeded",
+            "claim_id": "${UUID.randomUUID()}",
+            "amount_paise": 50000,
+            "occurred_at": "${Instant.now()}"
+        }
+    """.trimIndent().toByteArray()
+
+    val timestamp = Instant.now().epochSecond
+
+    try {
+        val response = client.post("/v1/webhooks/payments") {
+            contentType(ContentType.Application.Json)
+            header(
+                "X-Payment-Signature",
+                createWebhookSignature(body, timestamp)
+            )
+            setBody(body)
+        }
+
+        assertEquals(HttpStatusCode.OK, response.status)
+
+        // No Authorization header was supplied.
+        assertNull(response.headers[HttpHeaders.WWWAuthenticate])
+
+    } finally {
+        DatabaseFactory.dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                "DELETE FROM payment_events WHERE event_id = ?"
+            ).use { statement ->
+                statement.setString(1, eventId)
+                statement.executeUpdate()
+            }
+        }
+    }
+}
+@Test
+fun `webhook rejects missing signature`() = testApplication {
+    application {
+        configureSerialization()
+        configureStatusPages()
+        configureDatabase()
+        configureRouting()
+    }
+
+    val response = client.post("/v1/webhooks/payments") {
+        contentType(ContentType.Application.Json)
+        setBody("""{"event_id":"evt_missing"}""")
+    }
+
+    assertEquals(HttpStatusCode.Unauthorized, response.status)
+}
+
+@Test
+fun `webhook rejects incorrect signature`() = testApplication {
+    application {
+        configureSerialization()
+        configureStatusPages()
+        configureDatabase()
+        configureRouting()
+    }
+
+    val body = """{"event_id":"evt_invalid"}"""
+    val timestamp = Instant.now().epochSecond
+
+    val response = client.post("/v1/webhooks/payments") {
+        contentType(ContentType.Application.Json)
+        header(
+            "X-Payment-Signature",
+            "t=$timestamp,v1=${"0".repeat(64)}"
+        )
+        setBody(body)
+    }
+
+    assertEquals(HttpStatusCode.Unauthorized, response.status)
+}
+
+@Test
+fun `webhook rejects malformed JSON after signature verification`() = testApplication {
+    application {
+        configureSerialization()
+        configureStatusPages()
+        configureDatabase()
+        configureRouting()
+    }
+
+    val body = """{"event_id":"""
+        .toByteArray(StandardCharsets.UTF_8)
+
+    val timestamp = Instant.now().epochSecond
+
+    val response = client.post("/v1/webhooks/payments") {
+        contentType(ContentType.Application.Json)
+        header(
+            "X-Payment-Signature",
+            createWebhookSignature(body, timestamp)
+        )
+        setBody(body)
+    }
+
+    assertEquals(HttpStatusCode.BadRequest, response.status)
+}
+@Test
+fun `valid webhook pays real claim and duplicate delivery changes nothing`() = testApplication {
+    application {
+        configureSerialization()
+        configureStatusPages()
+        configureDatabase()
+        configureRouting()
+    }
+
+    val dealId = UUID.randomUUID()
+    val claimId = UUID.randomUUID()
+    val customerId = UUID.randomUUID()
+    val eventId = "http-payment-${UUID.randomUUID()}"
+
+    assertEquals(HttpStatusCode.OK, client.get("/").status)
+
+    try {
+        DatabaseFactory.dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO deals (
+                    id, restaurant_id, title, price_paise,
+                    stock_total, stock_available, starts_at, ends_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent()
+            ).use { statement ->
+                statement.setObject(1, dealId)
+                statement.setObject(2, UUID.randomUUID())
+                statement.setString(3, "Webhook Integration Deal")
+                statement.setInt(4, 50000)
+                statement.setInt(5, 10)
+                statement.setInt(6, 9)
+                statement.setTimestamp(7, Timestamp.from(Instant.now().minusSeconds(60)))
+                statement.setTimestamp(8, Timestamp.from(Instant.now().plusSeconds(3600)))
+                statement.executeUpdate()
+            }
+
+            connection.prepareStatement(
+                """
+                INSERT INTO claims (
+                    id, deal_id, customer_id, quantity,
+                    amount_paise, status, expires_at
+                )
+                VALUES (?, ?, ?, 1, 50000, 'RESERVED', ?)
+                """.trimIndent()
+            ).use { statement ->
+                statement.setObject(1, claimId)
+                statement.setObject(2, dealId)
+                statement.setObject(3, customerId)
+                statement.setTimestamp(4, Timestamp.from(Instant.now().plusSeconds(600)))
+                statement.executeUpdate()
+            }
+        }
+
+        val body = """
+            {
+                "event_id": "$eventId",
+                "type": "payment.succeeded",
+                "claim_id": "$claimId",
+                "amount_paise": 50000,
+                "occurred_at": "${Instant.now()}"
+            }
+        """.trimIndent()
+
+        val timestamp = Instant.now().epochSecond
+        val signature = createWebhookSignature(
+            body.toByteArray(StandardCharsets.UTF_8),
+            timestamp
+        )
+
+        // First delivery processes the payment.
+        val firstResponse = client.post("/v1/webhooks/payments") {
+            contentType(ContentType.Application.Json)
+            header("X-Payment-Signature", signature)
+            setBody(body)
+        }
+
+        assertEquals(HttpStatusCode.OK, firstResponse.status)
+
+        // Second delivery is acknowledged but must not apply the event again.
+        val duplicateResponse = client.post("/v1/webhooks/payments") {
+            contentType(ContentType.Application.Json)
+            header("X-Payment-Signature", signature)
+            setBody(body)
+        }
+
+        assertEquals(HttpStatusCode.OK, duplicateResponse.status)
+
+        DatabaseFactory.dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT status FROM claims WHERE id = ?"
+            ).use { statement ->
+                statement.setObject(1, claimId)
+                statement.executeQuery().use { result ->
+                    assertTrue(result.next())
+                    assertEquals("PAID", result.getString("status"))
+                }
+            }
+
+            connection.prepareStatement(
+                "SELECT stock_available FROM deals WHERE id = ?"
+            ).use { statement ->
+                statement.setObject(1, dealId)
+                statement.executeQuery().use { result ->
+                    assertTrue(result.next())
+                    assertEquals(9, result.getInt("stock_available"))
+                }
+            }
+
+            connection.prepareStatement(
+                "SELECT COUNT(*) FROM payment_events WHERE event_id = ?"
+            ).use { statement ->
+                statement.setString(1, eventId)
+                statement.executeQuery().use { result ->
+                    assertTrue(result.next())
+                    assertEquals(1, result.getInt(1))
+                }
+            }
+        }
+    } finally {
+        DatabaseFactory.dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                "DELETE FROM payment_events WHERE event_id = ?"
+            ).use {
+                it.setString(1, eventId)
+                it.executeUpdate()
+            }
+
+            connection.prepareStatement(
+                "DELETE FROM claims WHERE id = ?"
+            ).use {
+                it.setObject(1, claimId)
+                it.executeUpdate()
+            }
+
+            connection.prepareStatement(
+                "DELETE FROM deals WHERE id = ?"
+            ).use {
+                it.setObject(1, dealId)
+                it.executeUpdate()
+            }
+        }
+    }
+}
+@Test
+fun `webhook rejects stale signature`() = testApplication {
+    application {
+        configureSerialization()
+        configureStatusPages()
+        configureDatabase()
+        configureRouting()
+    }
+
+    val body = """
+        {
+            "event_id": "stale-${UUID.randomUUID()}",
+            "type": "payment.succeeded",
+            "claim_id": "${UUID.randomUUID()}",
+            "amount_paise": 50000,
+            "occurred_at": "${Instant.now()}"
+        }
+    """.trimIndent()
+
+    val staleTimestamp = Instant.now().epochSecond - 301
+
+    val response = client.post("/v1/webhooks/payments") {
+        contentType(ContentType.Application.Json)
+        header(
+            "X-Payment-Signature",
+            createWebhookSignature(
+                body.toByteArray(StandardCharsets.UTF_8),
+                staleTimestamp
+            )
+        )
+        setBody(body)
+    }
+
+    assertEquals(HttpStatusCode.Unauthorized, response.status)
+}
 }
